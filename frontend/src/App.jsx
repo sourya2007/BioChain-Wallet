@@ -114,13 +114,23 @@ async function sha256(str) {
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function apiRequest(path, method = "GET", payload = null) {
-  const options = {
-    method,
-    headers: { "Content-Type": "application/json" },
-  };
-  if (payload) {
-    options.body = JSON.stringify(payload);
+async function apiRequest(path, methodOrOptions = "GET", payload = null) {
+  let options;
+
+  if (typeof methodOrOptions === "object" && methodOrOptions !== null) {
+    options = {
+      ...methodOrOptions,
+      method: methodOrOptions.method || "GET",
+      headers: { "Content-Type": "application/json", ...(methodOrOptions.headers || {}) },
+    };
+  } else {
+    options = {
+      method: methodOrOptions,
+      headers: { "Content-Type": "application/json" },
+    };
+    if (payload) {
+      options.body = JSON.stringify(payload);
+    }
   }
 
   const res = await fetch(path, options);
@@ -286,6 +296,7 @@ function LoginScreen({ onLogin }) {
   const [pass, setPass] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [recoveryMode, setRecoveryMode] = useState(false);
   const [bootLines, setBootLines] = useState([]);
   const canvasRef = useRef(null);
 
@@ -338,7 +349,17 @@ function LoginScreen({ onLogin }) {
     setError("");
     await new Promise(r => setTimeout(r, 1200));
     setLoading(false);
-    onLogin({ username: user, displayName: user.toUpperCase() });
+    onLogin({ username: user, displayName: user.toUpperCase(), recoveryMode: false });
+  };
+
+  const handleForgotPassword = async () => {
+    setLoading(true);
+    setError("");
+    setRecoveryMode(true);
+    await new Promise(r => setTimeout(r, 700));
+    setLoading(false);
+    const fallbackUser = (user || "recovery_operator").trim();
+    onLogin({ username: fallbackUser, displayName: fallbackUser.toUpperCase(), recoveryMode: true });
   };
 
   return (
@@ -417,6 +438,29 @@ function LoginScreen({ onLogin }) {
                 </span>
               ) : "INITIALIZE SESSION"}
             </button>
+
+            <button
+              onClick={handleForgotPassword}
+              disabled={loading}
+              style={{
+                marginTop: 6,
+                background: "transparent",
+                border: "none",
+                color: ACCENT,
+                cursor: "pointer",
+                fontFamily: "'IBM Plex Mono',monospace",
+                fontSize: 10,
+                letterSpacing: "0.08em",
+                textDecoration: "underline",
+              }}
+            >
+              FORGOT PASSWORD? FALL BACK TO DNA HASH VERIFICATION
+            </button>
+            {recoveryMode && (
+              <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, color: YELLOW, textAlign: "center" }}>
+                Recovery mode armed. Manual DNA commitment required.
+              </div>
+            )}
           </div>
 
           <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: MUTED, marginTop: 14, textAlign: "center" }}>
@@ -433,8 +477,14 @@ function LoginScreen({ onLogin }) {
 }
 
 // ─── STAGE 2: DNA VERIFICATION ────────────────────────────────────────────────
-function DNAVerificationScreen({ user, onVerified }) {
+function DNAVerificationScreen({ user, onVerified, requireManualDNA = false }) {
   const SAMPLE11_BACKEND_COMMITMENT = "17a7dc0caf2b6a901845245811bdb104462eee513935eb9a57f2daa9506ee609";
+  const ALLOWED_PROFILE_COMMITMENTS = {
+    sample11: "17a7dc0caf2b6a901845245811bdb104462eee513935eb9a57f2daa9506ee609",
+    raw1: "01bdfae4eb9cc0870881a50dd2b030e00426b42c961f2c29a92634ced41797e6",
+    authmail: "5665a43ff1fdd3ca304e825c5429957f293cfb6082e6af8ce222ad45862bc5fc",
+  };
+  const allowedCommitmentSet = new Set(Object.values(ALLOWED_PROFILE_COMMITMENTS));
   const [stage, setStage] = useState("dna"); // dna | geo | processing | done
   const [dnaInput, setDnaInput] = useState("");
   const [dnaLoading, setDnaLoading] = useState(true);
@@ -447,6 +497,11 @@ function DNAVerificationScreen({ user, onVerified }) {
   const [profileData, setProfileData] = useState(null);
   const [walletData, setWalletData] = useState(null);
   const [sessionToken, setSessionToken] = useState("");
+  const [geoPermission, setGeoPermission] = useState("unknown");
+  const [geoDetecting, setGeoDetecting] = useState(false);
+  const [geoStatusLine, setGeoStatusLine] = useState("Location not requested yet");
+  const [detectedAddress, setDetectedAddress] = useState("-");
+  const [locationConfirmed, setLocationConfirmed] = useState(false);
 
   const addLog = (msg, type = "info") => setLog(l => [...l, { msg, type, t: fmtTime() }]);
 
@@ -455,8 +510,15 @@ function DNAVerificationScreen({ user, onVerified }) {
       return;
     }
 
-    setDnaLoading(true);
     setDnaInput("");
+    if (requireManualDNA) {
+      setDnaLoading(false);
+      setDnaLoadingLine("Recovery mode active: enter DNA hash manually");
+      addLog("Password recovery enabled; manual DNA commitment required", "info");
+      return;
+    }
+
+    setDnaLoading(true);
     const steps = [
       [300, "Fetching backend DNA commitment map..."],
       [900, "Resolving sample11.vcf canonical variant block..."],
@@ -475,7 +537,7 @@ function DNAVerificationScreen({ user, onVerified }) {
       timers.forEach(clearTimeout);
       clearTimeout(doneTimer);
     };
-  }, [stage]);
+  }, [stage, requireManualDNA]);
 
   const handleDNA = async () => {
     if (!dnaInput.trim()) return;
@@ -485,14 +547,23 @@ function DNAVerificationScreen({ user, onVerified }) {
       let hash = dnaValue;
 
       if (isPreHashedCommitment) {
-        addLog("Using precomputed backend DNA commitment from sample11", "ok");
+        addLog("Using provided DNA commitment hash", "ok");
       } else {
         addLog("Computing SHA-256 commitment from DNA source...");
         hash = await sha256(dnaValue);
       }
 
+      if (!allowedCommitmentSet.has(hash)) {
+        addLog("DNA commitment does not match registered profiles (sample11/raw1/authmail)", "err");
+        return;
+      }
+
+      const matchedProfile = Object.entries(ALLOWED_PROFILE_COMMITMENTS)
+        .find(([, commitment]) => commitment === hash)?.[0] || "unknown";
+
       setDnaHash(hash);
       addLog("DNA commitment: " + hash.slice(0, 32) + "...", "ok");
+      addLog(`Matched profile commitment: ${matchedProfile}`, "ok");
 
       addLog("Creating profile in BioChain backend...");
       const profile = await apiRequest("/api/profiles", "POST", {
@@ -509,7 +580,7 @@ function DNAVerificationScreen({ user, onVerified }) {
   };
 
   const handleGeo = async () => {
-    if (!geoData.lat || !geoData.lon || !profileData || !dnaHash) return;
+    if (!geoData.lat || !geoData.lon || !profileData || !dnaHash || !locationConfirmed) return;
     setStage("processing");
     setProgress(0);
 
@@ -576,6 +647,110 @@ function DNAVerificationScreen({ user, onVerified }) {
       setStage("geo");
       setProgress(0);
     }
+  };
+
+  const handleAutoDetectLocation = async () => {
+    const reverseGeocode = async (lat, lon) => {
+      try {
+        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`);
+        if (!res.ok) {
+          return "Address lookup unavailable";
+        }
+        const data = await res.json();
+        const addr = data.address || {};
+        const country = addr.country || "Unknown country";
+        const state = addr.state || addr.region || addr.county || "Unknown state";
+        const label = data.display_name || `${state}, ${country}`;
+        return `${country} | ${state} | ${label}`;
+      } catch {
+        return "Address lookup failed";
+      }
+    };
+
+    const applyDetectedLocation = async (lat, lon, source) => {
+      setGeoData((g) => ({ ...g, lat, lon }));
+      setLocationConfirmed(false);
+      const address = await reverseGeocode(lat, lon);
+      setDetectedAddress(address);
+      setGeoStatusLine(`Location captured from ${source}. Please confirm below.`);
+      addLog(`Location captured (${lat}, ${lon}) via ${source}`, "ok");
+    };
+
+    if (!navigator.geolocation) {
+      setGeoStatusLine("Geolocation is not supported in this browser");
+      addLog("Geolocation is not supported in this browser", "err");
+      return;
+    }
+
+    setGeoDetecting(true);
+    setGeoStatusLine("Requesting location permission...");
+
+    try {
+      if (navigator.permissions?.query) {
+        const result = await navigator.permissions.query({ name: "geolocation" });
+        setGeoPermission(result.state);
+        if (result.state === "denied") {
+          setGeoStatusLine("Location permission denied. Enable it in browser settings.");
+          addLog("Location permission denied", "err");
+          setGeoDetecting(false);
+          return;
+        }
+      }
+
+      setGeoStatusLine("Detecting precise GPS coordinates...");
+      const position = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 18000,
+          maximumAge: 0,
+        });
+      });
+
+      const lat = position.coords.latitude.toFixed(4);
+      const lon = position.coords.longitude.toFixed(4);
+      setGeoPermission("granted");
+      await applyDetectedLocation(lat, lon, "GPS");
+    } catch (error) {
+      let message = "Failed to detect location";
+      if (error?.code === 1) {
+        message = "Location access denied by user";
+        setGeoPermission("denied");
+      } else if (error?.code === 2) {
+        message = "Location unavailable";
+      } else if (error?.code === 3) {
+        message = "Location request timed out, trying network fallback";
+      }
+
+      addLog(message, "err");
+      try {
+        setGeoStatusLine("Trying network-based location fallback...");
+        const fallbackRes = await fetch("https://ipapi.co/json/");
+        if (!fallbackRes.ok) {
+          throw new Error("network fallback unavailable");
+        }
+        const fallback = await fallbackRes.json();
+        const lat = Number(fallback.latitude || fallback.lat).toFixed(4);
+        const lon = Number(fallback.longitude || fallback.lon).toFixed(4);
+        if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lon))) {
+          throw new Error("invalid fallback coordinates");
+        }
+        await applyDetectedLocation(lat, lon, "IP fallback");
+      } catch {
+        setGeoStatusLine("Unable to detect location. Enter latitude/longitude manually, then confirm.");
+      }
+    } finally {
+      setGeoDetecting(false);
+    }
+  };
+
+  const handleConfirmLocation = () => {
+    if (!geoData.lat || !geoData.lon) {
+      setGeoStatusLine("Enter latitude and longitude before confirmation.");
+      return;
+    }
+    setLocationConfirmed(true);
+    setGeoStatusLine("Location confirmed. You can now run trust evaluation.");
+    addLog(`Location confirmed by user (${geoData.lat}, ${geoData.lon})`, "ok");
   };
 
   useEffect(() => {
@@ -650,7 +825,9 @@ function DNAVerificationScreen({ user, onVerified }) {
               <div className="bb-panel zoom-in" style={{ padding: 20 }}>
                 <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: ACCENT, marginBottom: 4 }}>STEP 01 — DNA SOURCE</div>
                 <div style={{ fontSize: 12, color: MUTED, marginBottom: 16, lineHeight: 1.6 }}>
-                  Enter your genomic source string. It will be locally hashed — never transmitted raw.
+                  {requireManualDNA
+                    ? "Recovery mode: enter DNA hash/source manually. It must match sample11, raw1, or authmail profile commitments."
+                    : "Enter your genomic source string. It will be locally hashed — never transmitted raw."}
                 </div>
 
                 <div style={{ margin: "0 0 12px", padding: "8px 10px", borderRadius: 3, border: `1px solid ${dnaLoading ? "rgba(255,212,59,0.25)" : "rgba(0,255,157,0.22)"}`, background: dnaLoading ? "rgba(255,212,59,0.08)" : "rgba(0,255,157,0.08)", fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: dnaLoading ? YELLOW : ACCENT2 }}>
@@ -670,7 +847,7 @@ function DNAVerificationScreen({ user, onVerified }) {
                   ))}
                 </div>
 
-                <input className="terminal-input" type="text" placeholder="Genomic source string..."
+                <input className="terminal-input" type="text" placeholder={requireManualDNA ? "Manual DNA commitment or source string..." : "Genomic source string..."}
                   value={dnaInput} onChange={e => setDnaInput(e.target.value)}
                   onKeyDown={e => e.key === "Enter" && handleDNA()} disabled={dnaLoading} />
 
@@ -713,27 +890,38 @@ function DNAVerificationScreen({ user, onVerified }) {
 
                 <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                   <input className="terminal-input" placeholder="Latitude" value={geoData.lat}
-                    onChange={e => setGeoData(g => ({ ...g, lat: e.target.value }))} style={{ flex: 1 }} />
+                    onChange={e => {
+                      setGeoData(g => ({ ...g, lat: e.target.value }));
+                      setLocationConfirmed(false);
+                    }} style={{ flex: 1 }} />
                   <input className="terminal-input" placeholder="Longitude" value={geoData.lon}
-                    onChange={e => setGeoData(g => ({ ...g, lon: e.target.value }))} style={{ flex: 1 }} />
+                    onChange={e => {
+                      setGeoData(g => ({ ...g, lon: e.target.value }));
+                      setLocationConfirmed(false);
+                    }} style={{ flex: 1 }} />
+                </div>
+                <div style={{ marginBottom: 8, padding: "6px 8px", borderRadius: 3, border: `1px solid ${BORDER}`, background: "rgba(0,212,255,0.04)", fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, color: TEXT, wordBreak: "break-word" }}>
+                  ADDRESS: {detectedAddress}
                 </div>
                 <input className="terminal-input" placeholder="Device fingerprint" value={geoData.device}
                   onChange={e => setGeoData(g => ({ ...g, device: e.target.value }))} style={{ marginBottom: 14 }} />
 
-                <button className="btn-terminal" onClick={() => {
-                  if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(p => {
-                      setGeoData(g => ({ ...g, lat: p.coords.latitude.toFixed(4), lon: p.coords.longitude.toFixed(4) }));
-                    });
-                  } else {
-                    setGeoData(g => ({ ...g, lat: "22.5726", lon: "88.3639" }));
-                  }
-                }} style={{ width: "100%", marginBottom: 8, fontSize: 10 }}>
-                  ⊕ AUTO-DETECT LOCATION
+                <button className="btn-terminal" onClick={handleAutoDetectLocation} disabled={geoDetecting}
+                  style={{ width: "100%", marginBottom: 8, fontSize: 10 }}>
+                  {geoDetecting ? "⟳ DETECTING LOCATION..." : "⊕ AUTO-DETECT LOCATION"}
+                </button>
+
+                <div style={{ marginBottom: 10, padding: "6px 8px", borderRadius: 3, border: `1px solid ${geoPermission === "denied" ? "rgba(255,59,92,0.25)" : "rgba(0,212,255,0.2)"}`, background: geoPermission === "denied" ? "rgba(255,59,92,0.08)" : "rgba(0,212,255,0.06)", fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, color: geoPermission === "denied" ? RED : ACCENT }}>
+                  PERMISSION: {String(geoPermission).toUpperCase()} • {geoStatusLine}
+                </div>
+
+                <button className="btn-terminal" onClick={handleConfirmLocation}
+                  style={{ width: "100%", marginBottom: 8, fontSize: 10, borderColor: "rgba(0,255,157,0.4)", color: ACCENT2, background: "rgba(0,255,157,0.08)" }}>
+                  {locationConfirmed ? "✓ LOCATION CONFIRMED" : "CONFIRM LOCATION DETAILS"}
                 </button>
 
                 <button className="btn-terminal btn-primary-term" onClick={handleGeo}
-                  disabled={!geoData.lat || !geoData.lon}
+                  disabled={!geoData.lat || !geoData.lon || !locationConfirmed}
                   style={{ width: "100%", fontSize: 11, letterSpacing: "0.12em" }}>
                   RUN TRUST EVALUATION
                 </button>
@@ -817,7 +1005,34 @@ function Dashboard({ user, verificationData, onLogout }) {
   const [activeTab, setActiveTab] = useState("chart");
   const [txs] = useState(() => generateMockTxs("0x" + Math.random().toString(16).slice(2, 42)));
   const [time, setTime] = useState(fmtTime());
+  const [senderWalletId, setSenderWalletId] = useState(verificationData?.wallet?.wallet_id || "");
+  const [receiverScanKey, setReceiverScanKey] = useState("");
+  const [receiverSpendKey, setReceiverSpendKey] = useState("");
+  const [txAmount, setTxAmount] = useState("0.075");
+  const [txMemo, setTxMemo] = useState("Genomic secure transfer");
+  const [decoyCount, setDecoyCount] = useState(4);
+  const [txBusy, setTxBusy] = useState(false);
+  const [lastSecureTx, setLastSecureTx] = useState(null);
+  const [lastTrustCheck, setLastTrustCheck] = useState(null);
+  const [decoyPulse, setDecoyPulse] = useState(null);
+  const [txOpsLog, setTxOpsLog] = useState(() => ([
+    {
+      t: fmtTime(),
+      type: "ok",
+      msg: "TX ops terminal ready. Configure counterparty keys to execute secure relay.",
+    },
+  ]));
   const tickerRef = useRef(null);
+
+  useEffect(() => {
+    if (verificationData?.wallet?.wallet_id) {
+      setSenderWalletId(verificationData.wallet.wallet_id);
+    }
+  }, [verificationData]);
+
+  const pushTxOpsLog = (msg, type = "info") => {
+    setTxOpsLog(prev => ([{ t: fmtTime(), type, msg }, ...prev].slice(0, 16)));
+  };
 
   // Pre-generate chart data for all symbols
   useEffect(() => {
@@ -887,6 +1102,84 @@ function Dashboard({ user, verificationData, onLogout }) {
   const txTypeDist = txs.reduce((acc, t) => { acc[t.type] = (acc[t.type] || 0) + 1; return acc; }, {});
   const txChartData = Object.entries(txTypeDist).map(([type, count]) => ({ type, count }));
 
+  const handleSecureSend = async () => {
+    if (!verificationData?.sessionToken) {
+      pushTxOpsLog("Missing connection token. Re-run DNA verification and wallet connect.", "err");
+      return;
+    }
+    if (!senderWalletId || !receiverScanKey || !receiverSpendKey) {
+      pushTxOpsLog("Sender wallet and receiver scan/spend keys are required.", "err");
+      return;
+    }
+
+    setTxBusy(true);
+    pushTxOpsLog("Dispatching secure send request with trust-zone token...", "info");
+    try {
+      const result = await apiRequest("/api/transactions/send-secure", {
+        method: "POST",
+        body: JSON.stringify({
+          connection_token: verificationData.sessionToken,
+          sender_wallet_id: senderWalletId.trim(),
+          receiver: {
+            scan_public_key: receiverScanKey.trim(),
+            spend_public_key: receiverSpendKey.trim(),
+          },
+          amount: Number(txAmount),
+          memo: txMemo,
+          decoy_count: Number(decoyCount),
+        }),
+      });
+      setLastSecureTx(result);
+      pushTxOpsLog(`Secure transfer accepted: ${result.transaction_id || "tx_id_unavailable"}`, "ok");
+    } catch (err) {
+      pushTxOpsLog(`Secure send failed: ${err.message}`, "err");
+    } finally {
+      setTxBusy(false);
+    }
+  };
+
+  const handleTrustPulse = async () => {
+    if (!senderWalletId) {
+      pushTxOpsLog("Wallet ID is required for trust evaluation.", "err");
+      return;
+    }
+    setTxBusy(true);
+    pushTxOpsLog("Running trust pulse against current geo/device context...", "info");
+    try {
+      const trust = await apiRequest("/api/trust/evaluate", {
+        method: "POST",
+        body: JSON.stringify({
+          wallet_id: senderWalletId.trim(),
+          latitude: Number(verificationData?.geoData?.lat || 0),
+          longitude: Number(verificationData?.geoData?.lon || 0),
+          device_fingerprint: verificationData?.geoData?.device || "unknown-device",
+          dna_reauth_passed: true,
+        }),
+      });
+      setLastTrustCheck(trust);
+      pushTxOpsLog(`Trust pulse: ${trust.zone} (${Math.round((trust.trust_score || 0) * 100)}%)`, "ok");
+    } catch (err) {
+      pushTxOpsLog(`Trust pulse failed: ${err.message}`, "err");
+    } finally {
+      setTxBusy(false);
+    }
+  };
+
+  const handleDecoyPulse = async () => {
+    setTxBusy(true);
+    pushTxOpsLog("Triggering decoy broadcast fanout...", "info");
+    try {
+      const broadcast = await apiRequest("/api/decoys/broadcast");
+      setDecoyPulse(broadcast);
+      const count = Array.isArray(broadcast.broadcasts) ? broadcast.broadcasts.length : 0;
+      pushTxOpsLog(`Decoy broadcast completed (${count} relays).`, "ok");
+    } catch (err) {
+      pushTxOpsLog(`Decoy pulse failed: ${err.message}`, "err");
+    } finally {
+      setTxBusy(false);
+    }
+  };
+
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: BG, overflow: "hidden" }}>
       {/* ── TOP BAR ── */}
@@ -923,7 +1216,7 @@ function Dashboard({ user, verificationData, onLogout }) {
 
           {/* Tabs */}
           <div style={{ display: "flex", gap: 2, flex: 1, justifyContent: "center" }}>
-            {[["chart", "MARKETS"], ["portfolio", "PORTFOLIO"], ["transactions", "CHAIN LEDGER"], ["analytics", "ANALYTICS"]].map(([id, label]) => (
+            {[["chart", "MARKETS"], ["portfolio", "PORTFOLIO"], ["transactions", "CHAIN LEDGER"], ["analytics", "ANALYTICS"], ["txdash", "TX DASHBOARD"]].map(([id, label]) => (
               <button key={id} onClick={() => setActiveTab(id)}
                 style={{
                   fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, letterSpacing: "0.08em",
@@ -1350,6 +1643,86 @@ function Dashboard({ user, verificationData, onLogout }) {
           </div>
         </div>
       )}
+
+      {/* ── TRANSACTIONAL DASHBOARD TAB ── */}
+      {activeTab === "txdash" && (
+        <div style={{ flex: 1, overflowY: "auto", padding: 16, display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 1 }}>
+          <BBPanel title="SECURE TRANSACTION ORCHESTRATOR" right={txBusy ? "RUNNING" : "IDLE"}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div style={{ gridColumn: "1 / 3" }}>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, color: MUTED, marginBottom: 4 }}>SENDER WALLET ID</div>
+                <input className="terminal-input" value={senderWalletId} onChange={e => setSenderWalletId(e.target.value)} />
+              </div>
+              <div>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, color: MUTED, marginBottom: 4 }}>RECEIVER SCAN PUBKEY</div>
+                <input className="terminal-input" value={receiverScanKey} onChange={e => setReceiverScanKey(e.target.value)} placeholder="scan_pub_..." />
+              </div>
+              <div>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, color: MUTED, marginBottom: 4 }}>RECEIVER SPEND PUBKEY</div>
+                <input className="terminal-input" value={receiverSpendKey} onChange={e => setReceiverSpendKey(e.target.value)} placeholder="spend_pub_..." />
+              </div>
+              <div>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, color: MUTED, marginBottom: 4 }}>AMOUNT</div>
+                <input className="terminal-input" type="number" min="0" step="0.001" value={txAmount} onChange={e => setTxAmount(e.target.value)} />
+              </div>
+              <div>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, color: MUTED, marginBottom: 4 }}>DECOY COUNT</div>
+                <input className="terminal-input" type="number" min="1" max="32" value={decoyCount} onChange={e => setDecoyCount(Math.max(1, Number(e.target.value) || 1))} />
+              </div>
+              <div style={{ gridColumn: "1 / 3" }}>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, color: MUTED, marginBottom: 4 }}>MEMO</div>
+                <input className="terminal-input" value={txMemo} onChange={e => setTxMemo(e.target.value)} />
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+              <button className="btn-terminal" onClick={handleSecureSend} disabled={txBusy}>{txBusy ? "EXECUTING..." : "SECURE SEND"}</button>
+              <button className="btn-terminal" onClick={handleTrustPulse} disabled={txBusy}>TRUST PULSE</button>
+              <button className="btn-terminal" onClick={handleDecoyPulse} disabled={txBusy}>DECOY PULSE</button>
+            </div>
+          </BBPanel>
+
+          <BBPanel title="TX TELEMETRY SNAPSHOT" right={fmtTime()}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              <div style={{ padding: "8px 10px", border: `1px solid ${BORDER}`, background: "rgba(0,212,255,0.04)" }}>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, color: MUTED, letterSpacing: "0.08em" }}>SESSION TOKEN</div>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: ACCENT, marginTop: 4, wordBreak: "break-all" }}>{verificationData?.sessionToken || "N/A"}</div>
+              </div>
+              <div style={{ padding: "8px 10px", border: `1px solid ${BORDER}`, background: "rgba(0,255,157,0.04)" }}>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, color: MUTED, letterSpacing: "0.08em" }}>TRUST SCORE</div>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 18, color: ACCENT2, marginTop: 3 }}>{Math.round((verificationData?.trustResult?.score || 0) * 100)}%</div>
+              </div>
+              <div style={{ gridColumn: "1 / 3", padding: "8px 10px", border: `1px solid ${BORDER}`, background: "rgba(255,187,51,0.05)" }}>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, color: MUTED, letterSpacing: "0.08em" }}>LAST SECURE TX</div>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: TEXT, marginTop: 4, wordBreak: "break-all" }}>
+                  {lastSecureTx ? `${lastSecureTx.transaction_id || "tx_id_unavailable"} | decoys=${lastSecureTx.decoy_count ?? "n/a"}` : "No secure send dispatched yet."}
+                </div>
+              </div>
+              <div style={{ padding: "8px 10px", border: `1px solid ${BORDER}`, background: "rgba(0,212,255,0.04)" }}>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, color: MUTED, letterSpacing: "0.08em" }}>LAST TRUST PULSE</div>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: TEXT, marginTop: 4 }}>{lastTrustCheck ? `${lastTrustCheck.zone} / ${lastTrustCheck.action}` : "Not executed"}</div>
+              </div>
+              <div style={{ padding: "8px 10px", border: `1px solid ${BORDER}`, background: "rgba(0,255,157,0.04)" }}>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 8, color: MUTED, letterSpacing: "0.08em" }}>DECOY RELAYS</div>
+                <div style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: TEXT, marginTop: 4 }}>{decoyPulse && Array.isArray(decoyPulse.broadcasts) ? decoyPulse.broadcasts.length : 0}</div>
+              </div>
+            </div>
+          </BBPanel>
+
+          <div style={{ gridColumn: "1 / 3" }}>
+            <BBPanel title="OPERATIONS FEED" noPad>
+              <div style={{ maxHeight: 260, overflowY: "auto", padding: "8px 10px" }}>
+                {txOpsLog.map((entry, idx) => (
+                  <div key={`${entry.t}-${idx}`} style={{ display: "flex", gap: 8, padding: "5px 0", borderBottom: `1px solid ${BORDER}` }}>
+                    <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 9, color: MUTED, minWidth: 56 }}>{entry.t}</span>
+                    <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: 10, color: entry.type === "ok" ? ACCENT2 : entry.type === "err" ? RED : ACCENT }}>{entry.msg}</span>
+                  </div>
+                ))}
+              </div>
+            </BBPanel>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1368,7 +1741,7 @@ export default function App() {
         <LoginScreen onLogin={u => { setUser(u); setStage("dna"); }} />
       )}
       {stage === "dna" && user && (
-        <DNAVerificationScreen user={user} onVerified={vd => { setVerificationData(vd); setStage("dashboard"); }} />
+        <DNAVerificationScreen user={user} requireManualDNA={Boolean(user?.recoveryMode)} onVerified={vd => { setVerificationData(vd); setStage("dashboard"); }} />
       )}
       {stage === "dashboard" && user && verificationData && (
         <Dashboard user={user} verificationData={verificationData} onLogout={() => { setUser(null); setVerificationData(null); setStage("login"); }} />
