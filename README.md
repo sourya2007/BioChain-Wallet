@@ -1,6 +1,7 @@
 # BioChain Vault Backend (Python)
 
 A prototype backend for **BioChain Vault**: a crypto wallet architecture where DNA-derived identity anchors wallet control while on-chain transaction identity continuously rotates.
+Visit https://sourya2007.github.io/BioChain-Wallet/ for more details.
 
 ## Implemented Feature Set
 
