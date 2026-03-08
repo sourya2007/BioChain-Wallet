@@ -48,6 +48,9 @@ uvicorn app.main:app --reload
 Open docs at:
 - `http://127.0.0.1:8000/docs`
 
+Open frontend at:
+- `http://127.0.0.1:8000/frontend`
+
 ## One-Step Automated Test
 
 Run one command to execute a full end-to-end validation and print key outputs:

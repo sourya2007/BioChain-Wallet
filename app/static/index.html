@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BioChain Control Surface</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <div class="bg-orb orb-a"></div>
+  <div class="bg-orb orb-b"></div>
+
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">BioChain Vault</p>
+      <h1>Security Operations Console</h1>
+    </div>
+    <div class="status-pill" id="apiStatus">API: checking...</div>
+  </header>
+
+  <main class="layout">
+    <section class="panel login-panel reveal">
+      <h2>Profile Login</h2>
+      <p class="panel-sub">Create a profile, bind a currency wallet, then connect with DNA commitment verification.</p>
+
+      <form id="profileCreateForm" class="form-block">
+        <h3>Create Profile</h3>
+        <label>Profile Name <input name="profile_name" required placeholder="Ava Secure" /></label>
+        <label>DNA Source String <input name="dna_raw" required placeholder="sample:gene-001" /></label>
+        <button type="submit">Create Profile</button>
+      </form>
+
+      <form id="walletCreateForm" class="form-block">
+        <h3>Create Currency Wallet</h3>
+        <label>Profile ID <input name="profile_id" required placeholder="from profile response" /></label>
+        <label>Currency <input name="currency" required placeholder="BTC" /></label>
+        <label>Home Latitude <input name="home_latitude" type="number" step="any" value="37.7749" required /></label>
+        <label>Home Longitude <input name="home_longitude" type="number" step="any" value="-122.4194" required /></label>
+        <label>Device Fingerprint <input name="device_fingerprint" required placeholder="device-alpha" /></label>
+        <button type="submit">Create Wallet</button>
+      </form>
+
+      <form id="connectWalletForm" class="form-block">
+        <h3>Login / Connect Wallet</h3>
+        <label>Profile ID <input name="profile_id" required /></label>
+        <label>Wallet ID <input name="wallet_id" required /></label>
+        <label>DNA Source String <input name="dna_raw" required /></label>
+        <button type="submit">Connect</button>
+      </form>
+    </section>
+
+    <section class="panel dashboard-panel reveal">
+      <h2>Dashboard</h2>
+      <p class="panel-sub">Current identity, wallet posture, and trust outcome.</p>
+      <div class="stats-grid">
+        <article class="card">
+          <p class="card-label">Active Profile</p>
+          <p id="activeProfile" class="card-value">-</p>
+        </article>
+        <article class="card">
+          <p class="card-label">Wallet ID</p>
+          <p id="activeWallet" class="card-value">-</p>
+        </article>
+        <article class="card">
+          <p class="card-label">Connection Token</p>
+          <p id="connectionToken" class="card-value mono">-</p>
+        </article>
+        <article class="card">
+          <p class="card-label">Trust Zone</p>
+          <p id="trustZone" class="card-value">-</p>
+        </article>
+      </div>
+
+      <div class="card wide">
+        <p class="card-label">Wallet Keys</p>
+        <div class="kv"><span>Address</span><code id="walletAddress">-</code></div>
+        <div class="kv"><span>Scan Key</span><code id="scanKey">-</code></div>
+        <div class="kv"><span>Spend Key</span><code id="spendKey">-</code></div>
+      </div>
+    </section>
+
+    <section class="panel tx-panel reveal">
+      <h2>Transaction Menu</h2>
+      <p class="panel-sub">Run transfer, trust checks, ZK verify, and shard operations.</p>
+
+      <div class="tx-tabs">
+        <button class="tab active" data-tab="send">Secure Send</button>
+        <button class="tab" data-tab="trust">Trust Eval</button>
+        <button class="tab" data-tab="zk">ZK Verify</button>
+        <button class="tab" data-tab="shards">Shards</button>
+        <button class="tab" data-tab="decoys">Decoys</button>
+      </div>
+
+      <div class="tab-body active" id="tab-send">
+        <form id="secureSendForm" class="form-block compact">
+          <label>Connection Token <input name="connection_token" required /></label>
+          <label>Sender Wallet ID <input name="sender_wallet_id" required /></label>
+          <label>Receiver Scan Key <input name="scan_public_key" required /></label>
+          <label>Receiver Spend Key <input name="spend_public_key" required /></label>
+          <label>Amount <input name="amount" type="number" step="0.0001" required /></label>
+          <label>Memo <input name="memo" placeholder="optional" /></label>
+          <label>Decoy Count <input name="decoy_count" type="number" min="0" max="10" value="2" required /></label>
+          <button type="submit">Send Secure Transaction</button>
+        </form>
+      </div>
+
+      <div class="tab-body" id="tab-trust">
+        <form id="trustForm" class="form-block compact">
+          <label>Wallet ID <input name="wallet_id" required /></label>
+          <label>Latitude <input name="latitude" type="number" step="any" required /></label>
+          <label>Longitude <input name="longitude" type="number" step="any" required /></label>
+          <label>Device Fingerprint <input name="device_fingerprint" required /></label>
+          <label>DNA Reauth Passed
+            <select name="dna_reauth_passed">
+              <option value="false">false</option>
+              <option value="true">true</option>
+            </select>
+          </label>
+          <button type="submit">Evaluate Trust</button>
+        </form>
+      </div>
+
+      <div class="tab-body" id="tab-zk">
+        <form id="zkForm" class="form-block compact">
+          <label>Wallet ID <input name="wallet_id" required /></label>
+          <label>Proof <input name="proof" required placeholder="proof string" /></label>
+          <label>Public Signal <input name="public_signal" required placeholder="signal" /></label>
+          <button type="submit">Verify ZK DNA Proof</button>
+        </form>
+      </div>
+
+      <div class="tab-body" id="tab-shards">
+        <form id="shardCreateForm" class="form-block compact">
+          <h3>Create Shards</h3>
+          <label>Wallet ID <input name="wallet_id" required /></label>
+          <button type="submit">Create</button>
+        </form>
+
+        <form id="shardRecoverForm" class="form-block compact">
+          <h3>Recover Key (2-of-3)</h3>
+          <label>Wallet ID <input name="wallet_id" required /></label>
+          <label>Shard 1 (key:value) <input name="s1" placeholder="guardianA:abc123" /></label>
+          <label>Shard 2 (key:value) <input name="s2" placeholder="guardianB:def456" /></label>
+          <label>Shard 3 (key:value) <input name="s3" placeholder="guardianC:ghi789" /></label>
+          <label>DNA Scan Present
+            <select name="dna_scan_present">
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          </label>
+          <button type="submit">Recover Root Key</button>
+        </form>
+      </div>
+
+      <div class="tab-body" id="tab-decoys">
+        <button id="runDecoy" class="solo">Trigger Decoy Broadcast</button>
+      </div>
+    </section>
+
+    <section class="panel process-panel reveal">
+      <h2>Hashing and Process Stream</h2>
+      <p class="panel-sub">Live trace of frontend hashing plus backend security operations.</p>
+      <ul id="processLog"></ul>
+    </section>
+  </main>
+
+  <template id="logTemplate">
+    <li class="log-item">
+      <p class="log-head"><span class="log-time"></span> <span class="log-tag"></span></p>
+      <p class="log-text"></p>
+      <pre class="log-data"></pre>
+    </li>
+  </template>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
