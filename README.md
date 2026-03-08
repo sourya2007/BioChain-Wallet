@@ -51,6 +51,27 @@ Open docs at:
 Open frontend at:
 - `http://127.0.0.1:8000/frontend`
 
+## React Frontend (biochain-vault.jsx)
+
+The React UI is in `frontend/` and calls the FastAPI backend via `/api`.
+
+Run backend:
+
+```bash
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Run React app in another terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open React UI:
+- `http://127.0.0.1:5173`
+
 ## One-Step Automated Test
 
 Run one command to execute a full end-to-end validation and print key outputs:
